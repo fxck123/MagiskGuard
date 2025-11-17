@@ -1,0 +1,227 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Scanner</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<style>
+html, body {
+  margin:0;
+  padding:0;
+  font-family: Consolas, monospace;
+  background: #0a0a0a;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+#scannerPanel {
+  backdrop-filter: blur(70%);
+  background: rgba(0,0,0,0.5);
+  padding: 40px;
+  border-radius: 25px;
+  width: 90vw;
+  max-width: 800px;
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 0 50px rgba(0,0,0,0.9);
+  position: relative;
+}
+
+#languageSwitch {
+  display: flex;
+  gap:10px;
+  position:absolute;
+  top:20px;
+  right:20px;
+  z-index:10;
+}
+
+.flag {
+  width:32px;
+  height:20px;
+  border-radius:5px;
+  cursor:pointer;
+  backdrop-filter: blur(70%);
+  border:1px solid rgba(255,255,255,0.3);
+}
+
+#fileInput {
+  display: none;
+}
+
+#fileLabel {
+  padding: 15px 30px;
+  background: rgba(255,255,255,0.1);
+  border-radius: 20px;
+  cursor: pointer;
+  margin-top: 60px;
+  margin-bottom: 15px;
+  backdrop-filter: blur(70%);
+  color:#fff;
+  font-weight:bold;
+  font-size:16px;
+  text-align:center;
+}
+
+#fileName {
+  margin-bottom:15px;
+  font-size: 14px;
+  color:#fff;
+  text-align:center;
+  word-break: break-all;
+}
+
+#scanButton {
+  padding: 12px 25px;
+  border-radius: 20px;
+  cursor: pointer;
+  color:#fff;
+  backdrop-filter: blur(70%);
+  background: rgba(255,255,255,0.1);
+  font-weight:bold;
+  font-size:16px;
+  margin-bottom:20px;
+}
+
+#scanButton:hover {
+  background: rgba(255,255,255,0.2);
+}
+
+#console {
+  width: 90vw;
+  max-width: 800px;
+  flex:1;
+  background: rgba(255,255,255,0.05);
+  border-radius: 20px;
+  padding: 15px;
+  font-family: monospace;
+  font-size: 13px;
+  overflow-y: auto;
+  color:#fff;
+  box-sizing: border-box;
+  margin-top:20px;
+}
+
+.log-critical {color: #ff5555;}
+.log-warning {color: #ffff55;}
+.log-safe {color: #55ff55;}
+</style>
+</head>
+<body>
+
+<div id="scannerPanel">
+
+  <div id="languageSwitch">
+    <img src="https://upload.wikimedia.org/wikipedia/en/a/a4/Flag_of_the_United_States.svg" class="flag" onclick="setLang('en')">
+    <img src="https://upload.wikimedia.org/wikipedia/en/f/f3/Flag_of_Russia.svg" class="flag" onclick="setLang('ru')">
+  </div>
+
+  <label id="fileLabel" for="fileInput">Choose module (.zip)</label>
+  <input type="file" id="fileInput" accept=".zip">
+  <div id="fileName">No file chosen</div>
+
+  <button id="scanButton" onclick="startScan()">Scan</button>
+
+</div>
+
+<div id="console">Waiting for file upload...</div>
+
+<script>
+let lang='en';
+const texts={
+en:{
+  choose:'Choose module (.zip)',
+  scan:'Scan',
+  waiting:'Waiting for file upload...',
+  scanning:'Scanning: ',
+  detected:'Detected malicious code in',
+  safeModule:'Module is safe. No malicious code detected.',
+  safeLine:'Safe line.'
+},
+ru:{
+  choose:'Выберите модуль (.zip)',
+  scan:'Сканировать',
+  waiting:'Ожидание загрузки файла...',
+  scanning:'Сканирование: ',
+  detected:'Обнаружен вредоносный код в',
+  safeModule:'Модуль безопасен. Вредоносных команд не найдено.',
+  safeLine:'Строка безопасна.'
+}
+};
+
+const dangerousPatterns=[
+  {regex:/rm\s+-rf/gi,desc:'Deletes files or directories recursively',level:'critical'},
+  {regex:/dd\s+if=/gi,desc:'Overwrites disk partitions',level:'critical'},
+  {regex:/busybox\s+dd/gi,desc:'Executes dd via busybox',level:'critical'},
+  {regex:/su\s+-c/gi,desc:'Executes commands as root',level:'critical'},
+  {regex:/wget\s+http/gi,desc:'Downloads files from internet',level:'warning'},
+  {regex:/curl\s+http/gi,desc:'Downloads files via curl',level:'warning'},
+  {regex:/chmod\s+777/gi,desc:'Grants full permissions',level:'warning'},
+  {regex:/scp|ftp/gi,desc:'Suspicious network operations',level:'warning'},
+  {regex:/reboot/gi,desc:'Forced reboot',level:'critical'},
+  {regex:/mkfs|mkfs\.ext4|format/gi,desc:'Formats partition',level:'critical'}
+];
+
+function log(msg,cls=''){
+  const el=document.getElementById('console');
+  el.innerHTML+=`<div class="${cls}">${msg}</div>`;
+  el.scrollTop=el.scrollHeight;
+}
+
+function delay(ms){return new Promise(resolve=>setTimeout(resolve,ms));}
+
+function updateTexts(){
+  document.getElementById('fileLabel').innerText=texts[lang].choose;
+  document.getElementById('scanButton').innerText=texts[lang].scan;
+  document.getElementById('console').innerText=texts[lang].waiting;
+}
+
+document.getElementById('fileInput').addEventListener('change',function(){
+  if(this.files.length) document.getElementById('fileName').innerText=this.files[0].name;
+});
+
+function setLang(l){lang=l; updateTexts();}
+
+async function startScan(){
+  const fileInput=document.getElementById('fileInput');
+  if(!fileInput.files.length){ log('Please select a module zip.', 'log-warning'); return; }
+  const file=fileInput.files[0];
+  log(`${texts[lang].scanning}${file.name}`);
+  await delay(200);
+
+  const jszip=new JSZip();
+  try{
+    const zip=await jszip.loadAsync(file);
+    let found=false;
+    for(const fname in zip.files){
+      const f=zip.files[fname];
+      if(f.dir) continue;
+      const content=await f.async('string').catch(()=>null);
+      if(!content) continue;
+      let safe=true;
+      for(const pattern of dangerousPatterns){
+        if(content.match(pattern.regex)){
+          found=true; safe=false;
+          log(`${texts[lang].detected} '${fname}': ${pattern.desc}`,pattern.level==='critical'?'log-critical':'log-warning');
+        }
+      }
+      if(safe) log(`[${fname}] → ${texts[lang].safeLine}`,'log-safe');
+    }
+    if(!found) log(texts[lang].safeModule,'log-safe');
+  }catch(e){
+    log('Not a valid ZIP file or read error.','log-critical');
+  }
+}
+</script>
+
+</body>
+</html>
